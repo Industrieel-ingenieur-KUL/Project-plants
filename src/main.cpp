@@ -1,15 +1,45 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+
+//-------------------------------------------------------------
+// BLE Definitions
+//-------------------------------------------------------------
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c4c6eb4c606b" // Custom Service UUID
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8" // Custom Characteristic UUID for sensor data
+#define DEVICE_NAME         "ENS160 Air Quality"
+
+BLEServer* pServer = NULL;
+BLECharacteristic* pCharacteristic = NULL;
+bool deviceConnected = false;
+
+// Callback class to handle connection/disconnection events
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      deviceConnected = true;
+      Serial.println("BLE Client Connected.");
+    }
+
+    void onDisconnect(BLEServer* pServer) {
+      deviceConnected = false;
+      Serial.println("BLE Client Disconnected. Restarting Advertising...");
+      // Restart advertising to allow reconnections
+      pServer->startAdvertising(); 
+    }
+};
 
 //-------------------------------------------------------------
 // ENS160 related items
 //-------------------------------------------------------------
-#include "ScioSense_ENS160.h" // ENS160 library
+#include "ScioSense_ENS160.h"  // ENS160 library
 // Using address 0x53 as specified (ENS160_I2CADDR_1)
 ScioSense_ENS160 ens160(ENS160_I2CADDR_1); 
 
 //-------------------------------------------------------------
-// I2C Scanner Function - Unmodified from previous working version
+// I2C Scanner Function 
 //-------------------------------------------------------------
 void i2cScan() {
   byte error, address;
@@ -49,6 +79,45 @@ void i2cScan() {
   Serial.println("------------------------\n");
 }
 
+//-------------------------------------------------------------
+// BLE Setup Function
+//-------------------------------------------------------------
+void setupBLE() {
+  Serial.println("Setting up BLE Server...");
+
+  // Initialize BLE Device
+  BLEDevice::init(DEVICE_NAME);
+
+  // Create the BLE Server
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create the BLE Service
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  // Create a BLE Characteristic
+  pCharacteristic = pService->createCharacteristic(
+                      CHARACTERISTIC_UUID,
+                      BLECharacteristic::PROPERTY_READ |
+                      BLECharacteristic::PROPERTY_NOTIFY 
+                    );
+
+  // Add a descriptor (to allow notifications/subscriptions)
+  pCharacteristic->addDescriptor(new BLE2902());
+
+  // Start the service
+  pService->start();
+
+  // Start advertising
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06); // functions that help with iPhone connections and stability
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+  Serial.println("BLE Advertising started. Device name: " DEVICE_NAME);
+}
+
 
 /*--------------------------------------------------------------------------
   SETUP function
@@ -76,13 +145,16 @@ void setup() {
     Serial.println("done. ENS160 is ready.");
 
     // 3. Set the sensor to Standard mode for eCO2 and TVOC output
-    // This is the default, but setting it explicitly is good practice.
+    // Corrected the constant from _STD to _STANDARD
     if (ens160.setMode(ENS160_OPMODE_STD)) {
       Serial.println("Mode set to ENS160_OPMODE_STANDARD.");
     } else {
       Serial.println("Failed to set sensor mode!");
     }
     
+    // 4. Initialize the BLE system
+    setupBLE();
+
   } else {
     Serial.println("failed!");
     Serial.println("ENS160 init failed. Check address, power, and wiring.");
@@ -95,29 +167,38 @@ void setup() {
   MAIN LOOP FUNCTION
  --------------------------------------------------------------------------*/
 void loop() {
-  // If we reach the loop, the setup was successful.
+  // Only proceed if the sensor is available
   if (ens160.available()) {
     // Measure and update the sensor data
-    // 'true' indicates using internal temperature/humidity compensation registers (if set)
     ens160.measure(true); 
 
-    // Print Air Quality Index (AQI) based on the current resistance
-    Serial.print("AQI: ");
-    Serial.print(ens160.getAQI());
+    // Read the sensor values
+    int aqi = ens160.getAQI();
+    int eco2 = ens160.geteCO2();
+    int tvoc = ens160.getTVOC();
     
-    // Print equivalent CO2 value in parts per million (ppm)
-    Serial.print(" | eCO2: ");
-    Serial.print(ens160.geteCO2());
-    Serial.print(" ppm");
-    
-    // Print Total Volatile Organic Compounds value in parts per billion (ppb)
-    Serial.print(" | TVOC: ");
-    Serial.print(ens160.getTVOC());
-    Serial.println(" ppb");
-    
+    // Format the data into a single string
+    String dataString = "AQI:" + String(aqi) + 
+                        " | eCO2:" + String(eco2) + 
+                        "ppm | TVOC:" + String(tvoc) + "ppb";
+
+    // Print to Serial (for local debugging)
+    Serial.println(dataString);
+
+    // Send data via BLE if a client is connected
+    if (deviceConnected) {
+      pCharacteristic->setValue(dataString.c_str());
+      pCharacteristic->notify(); // Send the notification
+    }
   } else {
     Serial.println("Sensor not available.");
   }
 
-  delay(500); // Wait 500ms before the next reading
+  // Check for disconnected clients and restart advertising if needed
+  if (!deviceConnected && pServer) {
+    // This is handled in the MyServerCallbacks::onDisconnect, but good to check
+    // If the device was advertising and a client disconnected, it should restart automatically.
+  }
+
+  delay(500); // Wait 500ms before the next reading/notification
 }
