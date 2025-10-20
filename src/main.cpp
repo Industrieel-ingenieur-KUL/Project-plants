@@ -87,6 +87,11 @@ void setupBLE() {
 
   // Initialize BLE Device
   BLEDevice::init(DEVICE_NAME);
+  
+  // *** FIX: Request a larger MTU (Maximum Transmission Unit) ***
+  // This is required for sending data strings longer than the default 20 bytes
+  BLEDevice::setMTU(512); 
+  // ************************************************************
 
   // Create the BLE Server
   pServer = BLEDevice::createServer();
@@ -143,6 +148,16 @@ void setup() {
 
   if (ok && ens160.available()) {
     Serial.println("done. ENS160 is ready.");
+
+    // -------------------------------------------------------------------
+    // EXPLANATION OF MEASUREMENTS (NEW CODE)
+    // -------------------------------------------------------------------
+    Serial.println("\n--- Sensor Output Explanation ---");
+    Serial.println("AQI: Air Quality Index (1=Excellent to 5=Poor)");
+    Serial.println("eCO2: Equivalent CO2 concentration (in parts per million - ppm)");
+    Serial.println("TVOC: Total Volatile Organic Compounds (in parts per billion - ppb)");
+    Serial.println("-----------------------------------\n");
+    // -------------------------------------------------------------------
 
     // 3. Set the sensor to Standard mode for eCO2 and TVOC output
     // Corrected the constant from _STD to _STANDARD
