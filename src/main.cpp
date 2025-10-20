@@ -1,31 +1,28 @@
 #include <Arduino.h>
 #include <Wire.h>
 
-
-
 //-------------------------------------------------------------
 // ENS160 related items
 //-------------------------------------------------------------
-#include "ScioSense_ENS160.h"  // ENS160 library
-// The default addresses for ENS160 are 0x52 (ENS160_I2CADDR_0) or 0x53 (ENS160_I2CADDR_1)
+#include "ScioSense_ENS160.h" // ENS160 library
+// Using address 0x53 as specified (ENS160_I2CADDR_1)
 ScioSense_ENS160 ens160(ENS160_I2CADDR_1); 
 
 //-------------------------------------------------------------
-// I2C Scanner Function
-// Scans addresses 0x01 to 0x77 for responding devices.
+// I2C Scanner Function - Unmodified from previous working version
 //-------------------------------------------------------------
 void i2cScan() {
   byte error, address;
   int nDevices;
 
   Serial.println("\n--- I2C Bus Scanning ---");
-  Wire.begin(); // Initialize I2C (uses default pins: GPIO8/SDA, GPIO9/SCL on ESP32-C3)
+  // Explicitly initialize I2C for ESP32 WROOM: SDA=GPIO21, SCL=GPIO22
+  Wire.begin(21, 22); 
+  Serial.println("I2C initialized on SDA=GPIO21, SCL=GPIO22.");
   nDevices = 0;
 
   for (address = 1; address < 127; address++) {
-    // Start transmission to the current address
     Wire.beginTransmission(address);
-    // End transmission and get the status code
     error = Wire.endTransmission();
 
     if (error == 0) {
@@ -39,12 +36,11 @@ void i2cScan() {
       if (address < 16) Serial.print("0");
       Serial.println(address, HEX);
     }
-    // Delay slightly to prevent bus overload
     delay(1); 
   }
 
   if (nDevices == 0) {
-    Serial.println("No I2C devices found. Check wiring and pull-up resistors!");
+    Serial.println("No I2C devices found. Check wiring (SDA=21, SCL=22) and pull-up resistors!");
   } else {
     Serial.print("Scan complete. Found ");
     Serial.print(nDevices);
@@ -59,11 +55,8 @@ void i2cScan() {
  --------------------------------------------------------------------------*/
 void setup() {
   Serial.begin(115200);
-  
-  // A small delay is sufficient for the monitor to catch up
   delay(100); 
   Serial.println("Starting Setup...");
-
 
   // 1. Run the I2C Scanner first to confirm the sensor is visible.
   i2cScan(); 
@@ -73,18 +66,27 @@ void setup() {
   Serial.println("------------------------------------------------------------");
   delay(500);
 
-  Serial.print("Attempting ENS160 initialization (0x52)...");
+  // Updated print to reflect ENS160_I2CADDR_1 (0x53)
+  Serial.print("Attempting ENS160 initialization (0x53)...");
   
   // 2. Attempt the ENS160 initialization
   bool ok = ens160.begin();
 
   if (ok && ens160.available()) {
     Serial.println("done. ENS160 is ready.");
+
+    // 3. Set the sensor to Standard mode for eCO2 and TVOC output
+    // This is the default, but setting it explicitly is good practice.
+    if (ens160.setMode(ENS160_OPMODE_STD)) {
+      Serial.println("Mode set to ENS160_OPMODE_STANDARD.");
+    } else {
+      Serial.println("Failed to set sensor mode!");
+    }
+    
   } else {
     Serial.println("failed!");
     Serial.println("ENS160 init failed. Check address, power, and wiring.");
     // If init fails, we enter a safe loop instead of crashing to prevent WDT reset
-    // You must press the reset button to exit this.
     while(1) { delay(100); } 
   }
 }
@@ -94,6 +96,28 @@ void setup() {
  --------------------------------------------------------------------------*/
 void loop() {
   // If we reach the loop, the setup was successful.
-  Serial.println("Looping successfully...");
-  delay(500); // Changed delay from 2000ms to 500ms
+  if (ens160.available()) {
+    // Measure and update the sensor data
+    // 'true' indicates using internal temperature/humidity compensation registers (if set)
+    ens160.measure(true); 
+
+    // Print Air Quality Index (AQI) based on the current resistance
+    Serial.print("AQI: ");
+    Serial.print(ens160.getAQI());
+    
+    // Print equivalent CO2 value in parts per million (ppm)
+    Serial.print(" | eCO2: ");
+    Serial.print(ens160.geteCO2());
+    Serial.print(" ppm");
+    
+    // Print Total Volatile Organic Compounds value in parts per billion (ppb)
+    Serial.print(" | TVOC: ");
+    Serial.print(ens160.getTVOC());
+    Serial.println(" ppb");
+    
+  } else {
+    Serial.println("Sensor not available.");
+  }
+
+  delay(500); // Wait 500ms before the next reading
 }
